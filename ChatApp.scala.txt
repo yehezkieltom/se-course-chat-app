@@ -1,0 +1,257 @@
+package de.uni_saarland.cs.se
+package runtime
+
+import util.*
+
+import scala.Console.BLACK
+import scala.collection.immutable.HashMap
+
+//==============================================================================
+// Messages
+//==============================================================================
+sealed trait Message(val sender: Int)
+case class AuthenticationMessage(
+    override val sender: Int,
+    username: String,
+    password: String
+) extends Message(sender) {
+  override def toString: String = s"[$sender] u=$username p=$password"
+}
+
+case class TextMessage(
+    override val sender: Int,
+    message: String,
+    color: String = Console.BLACK
+) extends Message(sender) {
+  override def toString: String = s"[$sender] $message"
+}
+
+//==============================================================================
+// Server
+//==============================================================================
+class ChatServer(
+    val serverId: Int,
+#ifdef ENCRYPTION
+    private val encryptionMethod: EncryptionMethod,
+#endif
+    private val registeredUsers: Map[String, String] = HashMap()
+) extends Server[Message] {
+  val logger: Logger                                       = Logger()
+  private var clients: Map[Int, ClientConnection[Message]] = new HashMap()
+  private var unauthenticatedClients: Map[Int, ClientConnection[Message]] =
+    new HashMap()
+
+  override def handleMessage(message: Message): Unit = {
+    message match {
+      case authMessage: AuthenticationMessage =>
+        authenticate(authMessage)
+      case textMessage: TextMessage =>
+        broadcast(textMessage)
+    }
+  }
+
+  override def acceptClientConnection(
+      clientConnection: ClientConnection[Message]
+  ): Unit = {
+#ifdef LOGGING
+    logger.log(s"New client: ${clientConnection.clientId}")
+#endif
+
+#ifdef AUTHENTICATION
+    unauthenticatedClients += (clientConnection.clientId, clientConnection)
+#else
+    clients += (clientConnection.clientId, clientConnection)
+#endif
+  }
+
+  private def broadcast(message: TextMessage): Unit = {
+    val sender = message.sender
+
+#ifdef AUTHENTICATION
+    if (!isAuthenticated(sender)) {
+#ifdef LOGGING
+      logger.log(
+        s"Rejected message from unauthenticated client: ${message.sender}"
+      )
+#endif
+      sendMessage(
+        unauthenticatedClients(sender),
+        TextMessage(
+          serverId,
+          "You must authenticate before sending messages."
+        )
+      )
+      return
+  }
+#endif
+
+#ifdef LOGGING
+    logger.log(s"Broadcasting message from sender ${message.sender}")
+#endif
+
+    for (connection <- clients.values) {
+      connection.sendMessage(message)
+    }
+  }
+
+  private def authenticate(message: AuthenticationMessage): Unit = {
+#ifndef AUTHENTICATION
+    throw ConfigurationError()
+#endif
+
+    val sender = message.sender
+    val Array(username, password) =
+#ifdef ENCRYPTION
+    Array(
+      encryptionMethod.decrypt(message.username),
+      encryptionMethod.decrypt(message.password)
+    )
+#else
+    Array(message.username, message.password)
+#endif
+
+    if (registeredUsers.get(username).contains(password)) {
+#ifdef LOGGING
+      logger.log(s"Successfully authenticated client: $sender")
+#endif
+
+      val connection = unauthenticatedClients(sender)
+      unauthenticatedClients -= sender
+      clients += (sender, connection)
+    } else {
+#ifdef LOGGING
+      logger.log(s"Failed to authenticate client: $sender")
+#endif
+      sendMessage(
+        unauthenticatedClients(sender),
+        TextMessage(serverId, "Authentication failed.")
+      )
+    }
+  }
+
+  private def isAuthenticated(clientId: Int): Boolean = {
+    clients.keySet.contains(clientId)
+  }
+
+  private def sendMessage(
+      client: ClientConnection[Message],
+      message: Message
+  ): Unit = {
+#ifdef ENCRYPTION
+    val encryptedMessage = message match {
+      case AuthenticationMessage(sender, username, password) =>
+        AuthenticationMessage(
+          sender,
+          encryptionMethod.encrypt(username),
+          encryptionMethod.encrypt(password)
+        )
+      case TextMessage(sender, message, color) =>
+        TextMessage(sender, encryptionMethod.encrypt(message), color)
+    }
+    client.sendMessage(encryptedMessage)
+#else
+    client.sendMessage(message)
+#endif
+  }
+}
+
+//==============================================================================
+// Client
+//==============================================================================
+class ChatClient(
+    val clientId: Int,
+    val serverId: Int,
+#ifdef ENCRYPTION
+    private val encryptionMethod: EncryptionMethod,
+#endif
+    networkSimulator: NetworkSimulator[Message]
+) extends Client[Message] {
+  val view: View     = View()
+  val logger: Logger = Logger()
+  private val serverConnection = networkSimulator
+    .connectToServer(clientId, serverId)
+    .getOrElse(throw IllegalStateException("Unable to connect to server."))
+  private var isAuthenticated = false
+
+  override def handleMessage(message: Message): Unit = {
+#ifdef LOGGING
+    logger.log(s"Received message from sender ${message.sender}")
+#endif
+
+    message match {
+      case authMessage: AuthenticationMessage =>
+#ifdef AUTHENTICATION
+        if (authMessage.sender == serverId) {
+          isAuthenticated = true
+        }
+#else
+        throw ConfigurationError()
+#endif
+      case textMessage: TextMessage =>
+        displayMessage(textMessage)
+    }
+  }
+
+  private def displayMessage(message: TextMessage): Unit = {
+    val text =
+#ifdef ENCRYPTION
+      encryptionMethod.decrypt(message.message)
+#else
+      message.message
+#endif
+
+#ifdef COLOR
+    view.printMessage(message.sender, text, message.color)
+#else
+    view.printMessage(message.sender, text)
+#endif
+  }
+
+  def send(message: String, color: String = BLACK): Unit = {
+    val text =
+#ifdef ENCRYPTION
+      encryptionMethod.encrypt(message)
+#else
+      message
+#endif
+
+    val textMessage =
+#ifdef ENCRYPTION
+      TextMessage(clientId, text, color)
+#else
+      TextMessage(clientId, text)
+#endif
+
+#ifdef LOGGING
+    logger.log(s"Sending message: ${TextMessage(clientId, message)}")
+#endif
+
+    serverConnection.sendMessage(textMessage)
+  }
+
+  def authenticate(username: String, password: String): Unit = {
+#ifndef AUTHENTICATION
+      throw ConfigurationError()
+#endif
+
+    if (!isAuthenticated) {
+      val message =
+#ifdef ENCRYPTION
+        AuthenticationMessage(
+          clientId,
+          encryptionMethod.encrypt(username),
+          encryptionMethod.encrypt(password)
+        )
+#else
+        AuthenticationMessage(clientId, username, password)
+#endif
+
+#ifdef LOGGING
+      logger.log(
+        s"Sending authentication request: ${AuthenticationMessage(clientId, username, password)}"
+      )
+#endif
+      serverConnection.sendMessage(message)
+    }
+  }
+}
