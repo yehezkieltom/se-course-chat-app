@@ -30,6 +30,24 @@ class DecoratorChatAppTest extends AnyFlatSpec {
   }
 
 //==============================================================================
+// Decorator order
+//==============================================================================
+val chatServer = LoggingServer(
+      AuthenticatingServer(
+        EncryptingServer(ChatServerBase(0), ROT13),
+        Map("user2" -> "securePassword")
+      )
+    )
+
+val chatClient = LoggingClient(
+  AuthenticatingClient(
+    EncryptingClient(
+      ColoringClient((ChatClientBase(1, server.serverId, network), ROT13)
+    )
+  )
+)
+
+//==============================================================================
 // Basic tests
 //==============================================================================
   "A Chat application" should "display sent messages" in {

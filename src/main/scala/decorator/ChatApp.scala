@@ -42,7 +42,7 @@ case class ColoredTextMessage(
 
 trait ChatServer() extends Server[Message] {
   val serverId: Int
-  val logger: View
+  val logger: Logger
 
   override def handleMessage(message: Message): Unit
 
@@ -57,7 +57,7 @@ trait ChatServer() extends Server[Message] {
 trait ChatClient() extends Client[Message] {
   val clientId: Int
   val view: View
-  val logger: View
+  val logger: Logger
 
   override def handleMessage(message: Message): Unit
 

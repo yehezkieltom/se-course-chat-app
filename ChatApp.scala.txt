@@ -216,7 +216,7 @@ class ChatClient(
 #endif
 
     val textMessage =
-#ifdef ENCRYPTION
+#ifdef COLOR
       TextMessage(clientId, text, color)
 #else
       TextMessage(clientId, text)
