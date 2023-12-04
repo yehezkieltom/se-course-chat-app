@@ -24,6 +24,6 @@ class View {
   }
   
   def lastDisplayedMessage(): String = {
-    outputStream.toString.split("\n").last
+    outputStream.toString.split("\\R").last
   }
 }

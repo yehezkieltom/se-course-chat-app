@@ -1,7 +1,7 @@
 package de.uni_saarland.cs.se
 
 import decorator.*
-import util.{ConfigurationError, NetworkSimulator, REVERSE, ROT13}
+import util.{ConfigurationError, NetworkSimulator, REVERSE, ROT13, View}
 
 import org.scalatest.flatspec.AnyFlatSpec
 
@@ -29,23 +29,28 @@ class DecoratorChatAppTest extends AnyFlatSpec {
     )
   }
 
+
 //==============================================================================
 // Decorator order
 //==============================================================================
-val chatServer = LoggingServer(
+  "The decorators" must "be added in the correct order" in {
+    val network = NetworkSimulator[Message]()
+    val server = LoggingServer(
       AuthenticatingServer(
         EncryptingServer(ChatServerBase(0), ROT13),
         Map("user2" -> "securePassword")
       )
     )
-
-val chatClient = LoggingClient(
-  AuthenticatingClient(
-    EncryptingClient(
-      ColoringClient((ChatClientBase(1, server.serverId, network), ROT13)
+    network.registerServer(server)
+    val client = LoggingClient(
+      AuthenticatingClient(
+        EncryptingClient(
+          ColoringClient(ChatClientBase(1, server.serverId, network)), ROT13
+        )
+      )
     )
-  )
-)
+    network.registerClient(client)
+  }
 
 //==============================================================================
 // Basic tests

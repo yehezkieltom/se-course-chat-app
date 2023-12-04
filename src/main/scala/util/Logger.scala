@@ -16,6 +16,6 @@ class Logger {
   }
 
   def lastLoggedMessage(): String = {
-    outputStream.toString.split("\n").last
+    outputStream.toString.split("\\R").last
   }
 }
