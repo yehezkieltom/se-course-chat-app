@@ -50,10 +50,10 @@ class ChatServer(
   override def handleMessage(message: Message): Unit = {
     // TODO
     message match {
-      case AuthenticationMessage => 
-        authenticate(message)
-      case TextMessage => 
-        broadcast(message)
+      case authMessage: AuthenticationMessage => 
+        authenticate(authMessage)
+      case textMessage: TextMessage => 
+        broadcast(textMessage)
     }
     
   }
@@ -85,13 +85,13 @@ class ChatServer(
         
     if (registeredUsers.get(username).contains(password)) {
       if config.logging then logger.log(s"Successfully authenticated client: $sender")
-      val connection = unauthenticatedClients.get(sender)
+      val connection = unauthenticatedClients(sender)
       unauthenticatedClients - sender
-      clients += (sender -> connection)
+      clients += (sender, connection)
     } else {
       if config.logging then logger.log(s"Failed to authenticate client: $sender")
       sendMessage(
-        unauthenticatedClients.get(sender),
+        unauthenticatedClients(sender),
         TextMessage(serverId, "Authentication failed.")
       )
     }
@@ -105,7 +105,7 @@ class ChatServer(
           logger.log(s"Rejected message from unauthenticated client: ${message.sender}")
         }
         sendMessage(
-          unauthenticatedClients.get(sender),
+          unauthenticatedClients(sender),
           TextMessage(serverId, "You must authenticate before sending messages.")
         )
         return
