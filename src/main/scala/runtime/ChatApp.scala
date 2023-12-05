@@ -41,18 +41,113 @@ class ChatServer(
     val serverId: Int,
     private val registeredUsers: Map[String, String] = HashMap()
 ) extends Server[Message] {
-  val logger: Logger                                       = Logger()
+  val logger: Logger = Logger()
+
+  private var clients: Map[Int, ClientConnection[Message]] = new HashMap()
+  private var unauthenticatedClients: Map[Int, ClientConnection[Message]] =
+    new HashMap()
 
   override def handleMessage(message: Message): Unit = {
     // TODO
+    message match {
+      case AuthenticationMessage => 
+        authenticate(message)
+      case TextMessage => 
+        broadcast(message)
+    }
+    
   }
 
   override def acceptClientConnection(
       clientConnection: ClientConnection[Message]
   ): Unit = {
-    // TODO
+    if (config.logging) {
+      logger.log(s"New Client: ${clientConnection.clientId}")
+    }
+    if (config.authentication) {
+      unauthenticatedClients += (clientConnection.clientId -> clientConnection)
+    } else {
+      clients += (clientConnection.clientId -> clientConnection)
+    }
   }
+
+  private def authenticate(message: AuthenticationMessage): Unit = {
+    if (!config.authentication) {
+          throw ConfigurationError()
+    }
+    val sender: Int = message.sender
+    var username: String = message.username
+    var password: String = message.password
+    if (config.encryption.isDefined) {
+      username = config.encryption.get.decrypt(username)
+      password = config.encryption.get.decrypt(password)
+    }
+        
+    if (registeredUsers.get(username).contains(password)) {
+      if config.logging then logger.log(s"Successfully authenticated client: $sender")
+      val connection = unauthenticatedClients.get(sender)
+      unauthenticatedClients - sender
+      clients += (sender -> connection)
+    } else {
+      if config.logging then logger.log(s"Failed to authenticate client: $sender")
+      sendMessage(
+        unauthenticatedClients.get(sender),
+        TextMessage(serverId, "Authentication failed.")
+      )
+    }
+  }
+
+  private def broadcast(message: TextMessage): Unit = {
+    val sender = message.sender
+    if (config.authentication) {
+      if (!isAuthenticated(sender)) {
+        if (config.logging) {
+          logger.log(s"Rejected message from unauthenticated client: ${message.sender}")
+        }
+        sendMessage(
+          unauthenticatedClients.get(sender),
+          TextMessage(serverId, "You must authenticate before sending messages.")
+        )
+        return
+      }
+    }
+    if (config.logging) {
+      logger.log(s"Broadcasting message from sender ${message.sender}")
+    }
+
+    for (connection <- clients.values) {
+      connection.sendMessage(message)
+    }
+
+  }
+
+  private def isAuthenticated(clientId: Int): Boolean = {
+    clients.keySet.contains(clientId)
+  }
+
+  private def sendMessage(
+    client: ClientConnection[Message],
+    message: Message
+    ): Unit = {
+      if (config.encryption.isDefined) {
+        val encryptedMessage = message match {
+          case AuthenticationMessage(sender, username, password) => 
+            AuthenticationMessage(
+              sender,
+              config.encryption.get.encrypt(username),
+              config.encryption.get.encrypt(password)
+            )
+          case TextMessage(sender, message, color) => 
+            TextMessage(sender, config.encryption.get.encrypt(message), color)
+        }
+        client.sendMessage(encryptedMessage)
+      } else {
+        client.sendMessage(message)
+      }
+    }
 }
+
+
 
 //==============================================================================
 // Client
@@ -65,6 +160,11 @@ class ChatClient(
 ) extends Client[Message] {
   val view: View     = View()
   val logger: Logger = Logger()
+
+  private val serverConnection = networkSimulator
+    .connectToServer(clientId, serverId)
+    .getOrElse(throw IllegalStateException("Unable to connect to server."))
+  private var isAuthenticated = false
 
   override def handleMessage(message: Message): Unit = {
     // TODO
