@@ -62,7 +62,7 @@ class ChatServer(
       clientConnection: ClientConnection[Message]
   ): Unit = {
     if (config.logging) {
-      logger.log(s"New Client: ${clientConnection.clientId}")
+      logger.log(s"New client: ${clientConnection.clientId}")
     }
     if (config.authentication) {
       unauthenticatedClients += (clientConnection.clientId -> clientConnection)
