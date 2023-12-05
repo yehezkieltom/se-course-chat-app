@@ -167,14 +167,77 @@ class ChatClient(
   private var isAuthenticated = false
 
   override def handleMessage(message: Message): Unit = {
-    // TODO
+    if (config.logging) {
+      logger.log(s"Received message from sender ${message.sender}")
+    }
+    
+    message match {
+      case authMessage: AuthenticationMessage =>
+        if (config.authentication) {
+          if (authMessage.sender == serverId) {
+            isAuthenticated = true
+          }
+        } else {
+          throw ConfigurationError()
+        }
+      case textMessage: TextMessage => 
+        displayMessage(textMessage)
+    }
   }
 
+  private def displayMessage(message: TextMessage): Unit = {
+    var text: String = message.message
+    if (config.encryption.isDefined) {
+      text = config.encryption.get.decrypt(text)
+    }
+    if (config.color) {
+      view.printMessage(message.sender, text, message.color)
+    } else {
+      view.printMessage(message.sender, text)
+    }
+  }
   def send(message: String, color: String = BLACK): Unit = {
     // TODO
+    var text: String = message
+    if (config.encryption.isDefined) {
+      text = config.encryption.get.encrypt(text)
+    }
+
+    var textMessage: TextMessage = TextMessage(clientId, text)
+    if (config.color) {
+      textMessage = TextMessage(clientId, text, color)
+    }
+    if (config.logging) {
+      logger.log(s"Sending message: ${
+        TextMessage(clientId, message)
+      }")
+    }
+
+    serverConnection.sendMessage(textMessage)
   }
 
   def authenticate(username: String, password: String): Unit = {
     // TODO
+    if (!config.authentication) {
+      throw ConfigurationError()
+    }
+
+    if (!isAuthenticated) {
+      var message: AuthenticationMessage = AuthenticationMessage(clientId, username, password)
+      if (config.encryption.isDefined) {
+        message = AuthenticationMessage(
+          clientId, 
+          config.encryption.get.encrypt(username),
+          config.encryption.get.encrypt(password)
+        )
+      }
+
+      if (config.logging) {
+        logger.log(
+          s"Sending authentication request: ${AuthenticationMessage(clientId, username, password)}"
+          )
+      }
+      serverConnection.sendMessage(message)
+    }
   }
 }
