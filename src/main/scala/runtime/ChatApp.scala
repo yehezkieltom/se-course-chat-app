@@ -86,7 +86,7 @@ class ChatServer(
     if (registeredUsers.get(username).contains(password)) {
       if config.logging then logger.log(s"Successfully authenticated client: $sender")
       val connection = unauthenticatedClients(sender)
-      unauthenticatedClients - sender
+      unauthenticatedClients -= sender
       clients += (sender, connection)
     } else {
       if config.logging then logger.log(s"Failed to authenticate client: $sender")
