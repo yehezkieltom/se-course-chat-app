@@ -45,7 +45,6 @@ case class ColoredTextMessage(
 trait ChatServer() extends Server[Message] {
   val serverId: Int
   val logger: Logger
-
   override def handleMessage(message: Message): Unit
 
   override def acceptClientConnection(
@@ -65,12 +64,13 @@ trait ChatServer() extends Server[Message] {
 
   def getClients(): Map[Int, ClientConnection[Message]]
 
+  def addClient(clientConnection: ClientConnection[Message]): Unit
+
 }
 
 abstract class ChatServerDecorator(private val decorated: ChatServer)
   extends ChatServer {
     val serverId: Int = decorated.serverId
-    var clients: Map[Int, ClientConnection[Message]] = new HashMap()
 
 
     def getServerId(): Int = {
@@ -78,11 +78,11 @@ abstract class ChatServerDecorator(private val decorated: ChatServer)
     }
 
     def getClients(): Map[Int, ClientConnection[Message]] = {
-      clients
+      decorated.getClients()
     }
 
     def addClient(clientConnection: ClientConnection[Message]): Unit = {
-      clients += (clientConnection.clientId -> clientConnection)
+      decorated.addClient(clientConnection)
     }
 
     def isAuthenticationConfigured(): Unit = {
@@ -166,6 +166,10 @@ class ChatServerBase(val sId: Int) extends ChatServer {
   override def getClients(): Map[Int, ClientConnection[Message]] = {
     clients
   }
+  
+  override def addClient(clientConnection: ClientConnection[Message]): Unit = {
+    clients += (clientConnection.clientId -> clientConnection)
+  }
 
 }
 
@@ -217,7 +221,7 @@ case class AuthenticatingServer(
         printLog(s"Successfully authenticated client: $sender")
         val connection = unauthenticatedClients(sender)
         unauthenticatedClients -= sender
-        addClient(connection)
+        parent.addClient(connection)
       } else {
         printLog(s"Failed to authenticate client: $sender")
         sendMessage(
@@ -228,7 +232,7 @@ case class AuthenticatingServer(
     }
 
     def isAuthenticated(clientId: Int): Boolean = {
-      getClients().keySet.contains(clientId)
+      parent.getClients().keySet.contains(clientId)
     }
 
     override def broadcast(message: TextMessageBase): Unit = {
@@ -243,7 +247,7 @@ case class AuthenticatingServer(
       }
       printLog(s"Broadcasting message from sender ${sender}")
 
-      for (connection <- getClients().values) {
+      for (connection <- parent.getClients().values) {
         connection.sendMessage(message)
       }
     }
@@ -297,7 +301,7 @@ class ChatClientBase() extends ChatClient {
 }
 
 class ColoringClient() extends ChatClientDecorator{
-  
+
 }
 
 class EncryptingClient() extends ChatClientDecorator {
