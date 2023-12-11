@@ -4,8 +4,6 @@ package decorator
 import util.*
 
 import scala.collection.immutable.HashMap
-import de.uni_saarland.cs.se.util.REVERSE.encrypt
-import org.w3c.dom.Text
 
 //==============================================================================
 // Messages
@@ -53,11 +51,11 @@ trait ChatServer() extends Server[Message] {
       clientConnection: ClientConnection[Message]
   ): Unit
 
-  def broadcast(message: TextMessageBase): Unit
+  def broadcast(message: TextMessage): Unit
 
   def sendMessage(
     client: ClientConnection[Message],
-    messaage: Message
+    message: Message
   ): Unit
 
   def authenticate(message: AuthenticationMessage): Unit
@@ -67,6 +65,8 @@ trait ChatServer() extends Server[Message] {
   def getClients(): Map[Int, ClientConnection[Message]]
 
   def addClient(clientConnection: ClientConnection[Message]): Unit
+
+  def printLog(message: String): Unit
 
 }
 
@@ -91,33 +91,14 @@ abstract class ChatServerDecorator(private val decorated: ChatServer)
       throw ConfigurationError()
     }
 
-    override def acceptClientConnection(clientConnection: ClientConnection[Message]): Unit = {
-      printLog(s"New client: ${clientConnection.clientId}")
-      addClient(clientConnection)
-    }
-
-    def sendMessage(client: ClientConnection[Message], message: Message): Unit = {
-      val toBeSentMessage = message match {
-        case authMessage: AuthenticationMessage =>
-          AuthenticationMessage(
-            authMessage.sender,
-            authMessage.username,
-            authMessage.password
-          )
-        case textMessage: TextMessageBase =>
-          TextMessageBase(textMessage.sender, textMessage.message)
-      }
-      client.sendMessage(toBeSentMessage)
-    }
-    def printLog(message: String): Unit = {
-      return
-    }
-    
+    override def printLog(message: String): Unit = {
+      decorated.printLog(message)
+    }    
   }
 
 class ChatServerBase(val sId: Int) extends ChatServer {
-  val serverId: Int = sId
-  val logger: Logger = new Logger()
+  override val serverId: Int = sId
+  override val logger: Logger = Logger()
   var clients: Map[Int, ClientConnection[Message]] = new HashMap()
 
   override def acceptClientConnection(clientConnection: ClientConnection[Message]): Unit = {
@@ -126,26 +107,24 @@ class ChatServerBase(val sId: Int) extends ChatServer {
 
   override def handleMessage(message: Message): Unit = {
     message match {
-      case textMessage: TextMessageBase => 
+      case textMessage: TextMessage => 
         broadcast(textMessage)
       case authMessage: AuthenticationMessage =>
         authenticate(authMessage)
     }
   }
 
-  override def broadcast(message: TextMessageBase): Unit = {
+  override def broadcast(message: TextMessage): Unit = {
+    printLog(s"Broadcasting message from sender ${message.sender}")
     val sender: Int = message.sender
     for (connection <- clients.values) {
       connection.sendMessage(message)
     }
   }
 
-  override def sendMessage(
-    client: ClientConnection[Message],
-    message: Message
-    ): Unit = {
+  override def sendMessage(client: ClientConnection[Message], message: Message): Unit = {
       client.sendMessage(message)
-  }
+    }
 
   override def authenticate(message: AuthenticationMessage): Unit = {
     throw ConfigurationError()
@@ -161,6 +140,10 @@ class ChatServerBase(val sId: Int) extends ChatServer {
   
   override def addClient(clientConnection: ClientConnection[Message]): Unit = {
     clients += (clientConnection.clientId -> clientConnection)
+  }
+
+  override def printLog(message: String): Unit = {
+    logger.log(message)
   }
 
 }
@@ -179,34 +162,61 @@ case class EncryptingServer(
       encryptionMethod.decrypt(text)
     }
 
+    override def acceptClientConnection(clientConnection: ClientConnection[Message]): Unit = {
+      parent.acceptClientConnection(clientConnection)
+    }
     override def authenticate(message: AuthenticationMessage): Unit = {
-      //TODO decrypt the username and password in message before passing to authenticate
       parent.authenticate(message)
     }
 
-    override def broadcast(message: TextMessageBase): Unit = {
+    override def broadcast(message: TextMessage): Unit = {
       parent.broadcast(message)
     }
 
     override def handleMessage(message: Message): Unit = {
       message match {
         case authMessage: AuthenticationMessage => 
-          parent.handleMessage(
+          authenticate(
             AuthenticationMessage(
               authMessage.sender,
-              encryptText(authMessage.username),
-              encryptText(authMessage.password)
+              decryptText(authMessage.username),
+              decryptText(authMessage.password)
             )
           )
         case textMessage: TextMessageBase =>
-          parent.handleMessage(
+          broadcast(
             TextMessageBase(
               textMessage.sender,
-              encryptText(textMessage.message)
+              decryptText(textMessage.message)
+            )
+          )
+        case colTextMessage: ColoredTextMessage => 
+          broadcast(
+            ColoredTextMessage(
+              TextMessageBase(
+                colTextMessage._1.sender,
+                decryptText(colTextMessage._1.message)
+              ),
+              colTextMessage.color
             )
           )
       }
     }
+    override def sendMessage(client: ClientConnection[Message], message: Message): Unit = {
+      val encryptedMessage = message match {
+        case AuthenticationMessage(sender, username, password) =>
+          AuthenticationMessage(sender, encryptText(username), encryptText(password))
+        case TextMessageBase(sender, text) =>
+          TextMessageBase(sender, encryptText(text))
+        case ColoredTextMessage(textMessage, color) =>
+          ColoredTextMessage(TextMessageBase(textMessage.sender, encryptText(textMessage.message)), color)
+      }
+      client.sendMessage(encryptedMessage)
+    }
+
+    // override def printLog(message: String): Unit = {
+    //   parent.printLog(message)
+    // }
 }
 
 case class AuthenticatingServer(
@@ -217,7 +227,6 @@ case class AuthenticatingServer(
     var unauthenticatedClients: Map[Int, ClientConnection[Message]] = new HashMap()
 
     override def acceptClientConnection(clientConnection: ClientConnection[Message]): Unit = {
-      printLog(s"New client: ${clientConnection.clientId}")
       unauthenticatedClients += (clientConnection.clientId -> clientConnection)
   }
 
@@ -244,44 +253,78 @@ case class AuthenticatingServer(
       parent.getClients().keySet.contains(clientId)
     }
 
-    override def broadcast(message: TextMessageBase): Unit = {
+    override def broadcast(message: TextMessage): Unit = {
       val sender = message.sender
       if (!isAuthenticated(sender)) {
-        printLog(s"Rejected message from unauthenticated client: ${message.sender}")
+        printLog(s"Rejected message from unauthenticated client: $sender")
         sendMessage(
           unauthenticatedClients(sender),
-          TextMessageBase(getServerId(), "You must authenticate before sending messages.")
+          TextMessageBase(parent.serverId, "You must authenticate before sending messages.")
         )
         return
       }
-      printLog(s"Broadcasting message from sender ${sender}")
-
+      logger.log(s"Broadcasting message from sender ${message.sender}")
       for (connection <- parent.getClients().values) {
         connection.sendMessage(message)
       }
     }
 
     override def handleMessage(message: Message): Unit = {
-      parent.handleMessage(message)
+      message match {
+      case authMessage: AuthenticationMessage => 
+        authenticate(authMessage)
+      case textMessage: TextMessageBase => 
+        broadcast(textMessage)
+      }
     }
+
+    override def sendMessage(client: ClientConnection[Message], message: Message): Unit = {
+      client.sendMessage(message)
+    }
+
+    // override def printLog(message: String): Unit = {
+    //   parent.printLog(message)
+    // }
 }
 
 case class LoggingServer(private val parent: ChatServer) extends ChatServerDecorator(parent) {
   val logger: Logger = parent.logger
+
+  override def acceptClientConnection(clientConnection: ClientConnection[Message]): Unit = {
+    printLog(s"New client: ${clientConnection.clientId}")
+    parent.acceptClientConnection(clientConnection)
+  }
   override def printLog(message: String): Unit = {
     logger.log(message)
   }
 
   override def authenticate(message: AuthenticationMessage): Unit = {
+    val previousClients = parent.getClients()
     parent.authenticate(message)
+    val currentClients = parent.getClients()
+
+    // if (previousClients.size < currentClients.size) {
+    //   printLog(s"Successfully authenticated client: ${message.sender}")
+    // } else {
+    //   printLog(s"Failed to authenticate client: ${message.sender}")
+    // }
   }
 
-  override def broadcast(message: TextMessageBase): Unit = {
+  override def broadcast(message: TextMessage): Unit = {
+    // if(!parent.getClients().contains(message.sender)) {
+    //     printLog(s"Rejected message from unauthenticated client: ${message.sender}")
+    //   } else {
+    //     printLog(s"Broadcasting message from sender ${message.sender}")
+    //   }
     parent.broadcast(message)
   }
 
   override def handleMessage(message: Message): Unit = {
     parent.handleMessage(message)
+  }
+
+  override def sendMessage(client: ClientConnection[Message], message: Message): Unit = {
+    client.sendMessage(message)
   }
   
 }
@@ -301,7 +344,8 @@ trait ChatClient() extends Client[Message] {
   def send(message: String): Unit
   def send(message: String, color: String): Unit
   def authenticate(username: String, password: String): Unit
-  def printLog(message: String): Unit
+  def encryptText(message: String): String
+  def decryptText(message: String): String
 }
 
 class ChatClientBase(
@@ -309,29 +353,26 @@ class ChatClientBase(
   val serverId: Int,
   networkSimulator: NetworkSimulator[Message]
 ) extends ChatClient {
-  override val clientId: Int = cId
-  override val logger: Logger = Logger()
-  override val view: View = View()
+  val clientId: Int = cId
+  val logger: Logger = Logger()
+  val view: View = View()
 
   override val serverConnection = networkSimulator
     .connectToServer(clientId, serverId)
     .getOrElse(throw IllegalStateException("Unable to connect to server."))
 
-  override var isAuthenticated = false
+  var isAuthenticated = false
 
   override def authenticate(username: String, password: String): Unit = {
     throw ConfigurationError()
   }
     
   override def handleMessage(message: Message): Unit = {
-    printLog(s"Received message from sender ${message.sender}")
 
     message match {
-      case authMessage: AuthenticationMessage => 
-        throw ConfigurationError()
       case textMessage: TextMessageBase =>
         displayMessage(textMessage)
-      case coloredTextMessage: ColoredTextMessage =>
+      case _ => 
         throw ConfigurationError()
     }
   }
@@ -342,7 +383,6 @@ class ChatClientBase(
 
   override def send(message: String): Unit = {
     var textMessage: TextMessageBase = TextMessageBase(clientId, message)
-    printLog(s"Sending message: ${textMessage}")
     serverConnection.sendMessage(textMessage)
   }
 
@@ -350,9 +390,9 @@ class ChatClientBase(
     throw ConfigurationError()
   }
 
-  override def printLog(message: String): Unit = {
-    return
-  }
+  override def encryptText(message: String): String = message
+
+  override def decryptText(message: String): String = message
 }
 
 abstract class ChatClientDecorator(private val decorated: ChatClient) 
@@ -364,46 +404,46 @@ abstract class ChatClientDecorator(private val decorated: ChatClient)
     var isAuthenticated = decorated.isAuthenticated
     
     def getServerId(): Int = serverId
+
+    def encryptText(message: String): String = message
+
+    def decryptText(message: String): String = message
 }
 
 case class ColoringClient(private val parent: ChatClient) extends ChatClientDecorator(parent) {
+  val clientId: Int = parent.clientId
 
   override def authenticate(username: String, password: String): Unit = {
     parent.authenticate(username, password)
   }
 
   override def handleMessage(message: Message): Unit = {
-    printLog(s"Received message from sender ${message.sender}")
-
     message match {
-      case authMessage: AuthenticationMessage => 
-        throw ConfigurationError()
-      case textMessage: TextMessageBase =>
-        displayMessage(textMessage)
       case coloredTextMessage: ColoredTextMessage =>
         displayColoredMessage(coloredTextMessage)
+      case _ =>
+        parent.handleMessage(message)
     }
-  }
-
-  private def displayMessage(message: TextMessageBase): Unit = {
-    view.printMessage(message.sender, message.message)
   }
 
   private def displayColoredMessage(message: ColoredTextMessage): Unit = {
     view.printMessage(message._1.sender, message._1.message, message.color)
   }
 
-  override def printLog(message: String): Unit = {
-    parent.printLog(message)
-  }
-
   override def send(message: String): Unit = {
-    parent.send(message)
+    parent.send(encryptText(message))
   }
 
   override def send(message: String, color: String): Unit = {
-    parent.send(message, color)
+    val text = encryptText(message)
+    val coloredTextMessage = ColoredTextMessage(TextMessageBase(clientId, text), color)
+    serverConnection.sendMessage(coloredTextMessage)
   }
+
+  override def encryptText(message: String): String = parent.encryptText(message)
+
+  override def decryptText(message: String): String = parent.decryptText(message)
+
     
 }
 
@@ -411,25 +451,41 @@ case class EncryptingClient(
   private val parent: ChatClient, 
   private val encryptionMethod: EncryptionMethod) 
   extends ChatClientDecorator(parent) {
+    val clientId: Int = parent.clientId
 
-    private def decryptText(text: String): String = {
+    override def decryptText(text: String): String = {
       encryptionMethod.decrypt(text)
     }
 
-    private def encryptText(text: String): String = {
+    override def encryptText(text: String): String = {
       encryptionMethod.encrypt(text)
     }
 
     override def authenticate(username: String, password: String): Unit = {
-      parent.authenticate(encryptText(username), decryptText(password))
+      parent.authenticate(username, password)
     }
 
     override def handleMessage(message: Message): Unit = {
-      parent.handleMessage(message)
-    }
-
-    override def printLog(message: String): Unit = {
-      parent.printLog(message)
+      val decryptedMessage: Message = 
+        message match {
+          case authMessage: AuthenticationMessage =>
+            AuthenticationMessage(
+              authMessage.sender,
+              decryptText(authMessage.username),
+              decryptText(authMessage.password)
+            )
+          case textMessage: TextMessageBase =>
+            TextMessageBase(textMessage.sender, decryptText(textMessage.message))
+          case coloredTextMessage: ColoredTextMessage =>
+            ColoredTextMessage(
+              TextMessageBase(
+                coloredTextMessage._1.sender,
+                decryptText(coloredTextMessage._1.message)
+              ),
+              coloredTextMessage.color
+            )
+        }
+      parent.handleMessage(decryptedMessage)
     }
 
     override def send(message: String): Unit = {
@@ -442,15 +498,65 @@ case class EncryptingClient(
 }
 
 case class AuthenticatingClient(private val parent: ChatClient) extends ChatClientDecorator(parent) {
+  val clientId: Int = parent.clientId
+  
   override def authenticate(username: String, password: String): Unit = {
     if (!parent.isAuthenticated) {
-      val message = AuthenticationMessage(parent.clientId, username, password)
+      val message = AuthenticationMessage(
+        parent.clientId, 
+        encryptText(username), 
+        encryptText(password))
       //logger need to show unencrypted username and password so you cannot show actual username and password,
       //also other log for show sent message may need the unencrypted version of the message
-      printLog(s"Sending authentication requestL ${}")
+      parent.serverConnection.sendMessage(message)
+    }
+  }
+
+  override def encryptText(message: String): String = {
+    parent.encryptText(message)
+  }
+
+  override def decryptText(message: String): String = {
+    parent.decryptText(message)
+  }
+
+  override def handleMessage(message: Message): Unit = {
+    message match {
+      case authMessage: AuthenticationMessage =>
+        authenticate(authMessage.username, authMessage.password)
+      case _ => 
+        parent.handleMessage(message)
+    }
+  }
+
+  override def send(message: String): Unit = {
+    parent.send(message)
+  }
+
+  override def send(message: String, color: String): Unit = {
+    parent.send(message, color)
   }
 }
 
 case class LoggingClient(private val parent: ChatClient) extends ChatClientDecorator(parent) {
+  val clientId: Int = parent.clientId
 
+  override def handleMessage(message: Message): Unit = {
+    logger.log(s"Received message from sender ${message.sender}")
+    parent.handleMessage(message: Message)
+  }
+  override def send(message: String): Unit = {
+    logger.log(s"Sending message: ${TextMessageBase(clientId, message)}")
+    parent.send(message)
+  }
+  override def send(message: String, color: String): Unit = {
+    logger.log(s"Sending message: ${
+      ColoredTextMessage(TextMessageBase(clientId, message), color)
+    }")
+    parent.send(message, color)
+  }
+  override def authenticate(username: String, password: String): Unit = {
+    logger.log(s"Sending authentication request: ${AuthenticationMessage(clientId, username, password)}")
+    parent.authenticate(username, password)
+  }
 }
